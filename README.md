@@ -15,11 +15,12 @@ only the configured chat id is honored.
 0. Preflight: prune workdirs beyond the newest 4 (the latest batch is always
    kept for `/redo`/`/last`), refuse if < 60 GB free, warn if a yt-dlp probe
    fails (stale cookies → sourcing will 429).
-1. Brief in → `claude -p` (Fable 5, `--effort max`) works under
+1. Brief in → `claude -p` (Fable 5, `--effort high` — the knee of the
+   quality/quota curve; `HYPEBOT_EFFORT` to change) works under
    `/mnt/games-nvme-gen4/hypebot/<date>/`, one workdir per edit, full SKILL.md
    quality loop, zero clip overlap. If the run dies on a genuine quota error
    (never on a pipeline failure or `/cancel`), it reruns on grok-4.5 via
-   `opencode --variant max`.
+   `opencode --variant high`.
 2. Agent writes `deliver/manifest.json` last — that's the success signal. The
    bot validates every entry (file, 1080×1920, ~30 s, audio, caption).
 3. Full-res → `~/Videos/hype/<date>/`. Files ≥ 49 MB get a ~46 MB preview

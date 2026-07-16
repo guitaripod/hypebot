@@ -24,6 +24,8 @@ Config via environment (see ~/.config/hypebot/secrets.env):
   HYPEBOT_MIN_FREE_GB                     default 60 (refuse batch below this)
   HYPEBOT_KEEP_WORKDIRS                   default 4 (older ones pruned pre-batch)
   HYPEBOT_PREFLIGHT                       default 1 (0 disables prune/disk/yt-dlp checks)
+  HYPEBOT_EFFORT                          default high (claude reasoning effort)
+  HYPEBOT_OPENCODE_VARIANT                default high (grok reasoning variant)
 """
 
 import http.client
@@ -47,8 +49,10 @@ CHAT_ID = os.environ.get("HYPEBOT_CHAT_ID", "")
 API_BASE = os.environ.get("HYPEBOT_API_BASE", "https://api.telegram.org")
 CLAUDE_BIN = os.environ.get("HYPEBOT_CLAUDE", "claude")
 CLAUDE_MODEL = os.environ.get("HYPEBOT_CLAUDE_MODEL", "claude-fable-5")
+CLAUDE_EFFORT = os.environ.get("HYPEBOT_EFFORT", "high")
 OPENCODE_BIN = os.environ.get("HYPEBOT_OPENCODE", "opencode")
 OPENCODE_MODEL = os.environ.get("HYPEBOT_OPENCODE_MODEL", "xai/grok-4.5")
+OPENCODE_VARIANT = os.environ.get("HYPEBOT_OPENCODE_VARIANT", "high")
 SKILL_MD = os.environ.get(
     "HYPEBOT_SKILL_MD", str(Path.home() / ".claude/skills/hype-edit/SKILL.md"))
 WORK_ROOT = Path(os.environ.get("HYPEBOT_WORK_ROOT", "/mnt/games-nvme-gen4/hypebot"))
@@ -248,11 +252,11 @@ def make_preview(src, dst):
 
 def engines(prompt):
     return [
-        (f"{CLAUDE_MODEL} (claude code, max effort)",
-         [CLAUDE_BIN, "-p", prompt, "--model", CLAUDE_MODEL, "--effort", "max",
+        (f"{CLAUDE_MODEL} (claude code, {CLAUDE_EFFORT} effort)",
+         [CLAUDE_BIN, "-p", prompt, "--model", CLAUDE_MODEL, "--effort", CLAUDE_EFFORT,
           "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"]),
-        (f"{OPENCODE_MODEL} (opencode, max variant)",
-         [OPENCODE_BIN, "run", prompt, "-m", OPENCODE_MODEL, "--variant", "max",
+        (f"{OPENCODE_MODEL} (opencode, {OPENCODE_VARIANT} variant)",
+         [OPENCODE_BIN, "run", prompt, "-m", OPENCODE_MODEL, "--variant", OPENCODE_VARIANT,
           "--format", "json", "--auto", "--print-logs"]),
     ]
 
