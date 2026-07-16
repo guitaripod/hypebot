@@ -42,9 +42,12 @@ import json, sys, glob, os
 calls = [json.loads(l) for l in open(sys.argv[1])]
 methods = [c["method"] for c in calls]
 assert "setMyCommands" in methods, methods
-sends = [c["payload"].get("text", "") for c in calls if c["method"] == "sendMessage"]
+msgs = [c["payload"] for c in calls if c["method"] == "sendMessage"]
+sends = [p.get("text", "") for p in msgs]
 assert any("Batch started" in t for t in sends), sends
-assert any("Batch done" in t for t in sends), sends
+done = next(p for p in msgs if "Batch done" in p.get("text", ""))
+keys = [b["callback_data"] for row in done["reply_markup"]["inline_keyboard"] for b in row]
+assert keys == ["start_posting"], keys
 assert any("caption 1" in t for t in sends), sends
 assert any("caption 2" in t for t in sends), sends
 mg = next(c for c in calls if c["method"] == "sendMediaGroup")

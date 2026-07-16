@@ -171,9 +171,13 @@ def api(method, payload=None, files=None, timeout=90):
     raise RuntimeError(f"telegram {method} failed after retries: {last_err}")
 
 
-def send(text, silent=False):
-    return api("sendMessage", {"chat_id": CHAT_ID, "text": text,
-                               "disable_notification": silent})
+def send(text, silent=False, buttons=None):
+    """sendMessage; buttons = rows of (label, callback_data) inline keys."""
+    payload = {"chat_id": CHAT_ID, "text": text, "disable_notification": silent}
+    if buttons:
+        payload["reply_markup"] = {"inline_keyboard": [
+            [{"text": lb, "callback_data": cd} for lb, cd in row] for row in buttons]}
+    return api("sendMessage", payload)
 
 
 def edit_message(message_id, text):
@@ -456,7 +460,8 @@ class Bot:
             try:
                 updates = api("getUpdates", {
                     "offset": self.state.get("update_offset", 0),
-                    "timeout": 25, "allowed_updates": ["message"]}, timeout=40)
+                    "timeout": 25, "allowed_updates": ["message", "callback_query"]},
+                    timeout=40)
             except RuntimeError as e:
                 log(f"getUpdates: {e}", "WARN")
                 time.sleep(5)
@@ -464,10 +469,7 @@ class Bot:
             for u in updates or []:
                 self.state["update_offset"] = u["update_id"] + 1
                 save_state(self.state)
-                msg = u.get("message") or {}
-                if str((msg.get("chat") or {}).get("id")) != str(CHAT_ID):
-                    continue
-                text = (msg.get("text") or "").strip()
+                text = self._update_text(u)
                 if text:
                     try:
                         self.handle(text)
@@ -477,6 +479,27 @@ class Bot:
                             send(f"⚠️ error handling that: {e}")
                         except RuntimeError:
                             pass
+
+    def _update_text(self, u):
+        """Normalize an update to a command string, or "" to ignore.
+
+        Inline-button taps arrive as callback_query with data like "skip";
+        they map onto the same /command handlers as typed text.
+        """
+        cq = u.get("callback_query")
+        if cq:
+            try:
+                api("answerCallbackQuery", {"callback_query_id": cq["id"]})
+            except RuntimeError as e:
+                log(f"answerCallbackQuery: {e}", "WARN")
+            if str((cq.get("from") or {}).get("id")) != str(CHAT_ID):
+                return ""
+            data = (cq.get("data") or "").strip()
+            return f"/{data}" if data else ""
+        msg = u.get("message") or {}
+        if str((msg.get("chat") or {}).get("id")) != str(CHAT_ID):
+            return ""
+        return (msg.get("text") or "").strip()
 
     def _drain_backlog(self):
         updates = api("getUpdates", {"offset": -1, "timeout": 0}, timeout=15)
@@ -525,7 +548,8 @@ class Bot:
             elif time.time() >= self._prompt_retry_at:
                 try:
                     send("🎬 Batch day — what should this one be about? "
-                         "Reply with a brief, or /skip.")
+                         "Reply with a brief.",
+                         buttons=[[("⏭ Skip today", "skip")]])
                     self.state["last_prompt_date"] = today
                     self.state["awaiting_brief"] = True
                     save_state(self.state)
@@ -616,7 +640,8 @@ class Bot:
         self.runner.start("batch", date_dir, prompt,
                           lambda ok, err: self._batch_done(date_dir, brief, ok, err))
         send(f"🚀 Batch started: “{brief}”\n{BATCH_SIZE} edits · {date_dir}\n"
-             f"I'll ping progress here. /status anytime.")
+             f"I'll ping progress here.",
+             buttons=[[("ℹ️ Status", "status"), ("🛑 Cancel", "cancel")]])
         log(f"batch started: {brief!r} → {date_dir}")
 
     def _batch_done(self, date_dir, brief, ok, err):
@@ -709,8 +734,9 @@ class Bot:
         songs = "\n".join(f"{i + 1}. {e['player']} × {e['song']}" for i, e in enumerate(manifest))
         send(f"✅ Batch done: “{brief}”\n\n{songs}\n\n"
              f"Full-res on disk: {out_dir}\n"
-             f"Album + copy-paste captions incoming. /start_posting when you begin "
-             f"(pings every {CADENCE_S / 3600:g}h, posting order below).")
+             f"Album + copy-paste captions incoming. Tap ▶️ when you start posting "
+             f"(pings every {CADENCE_S / 3600:g}h, posting order below).",
+             buttons=[[("▶️ Start posting", "start_posting")]])
         self._send_album(manifest, paths)
         for i, e in enumerate(manifest):
             send(f"#{i + 1} {e['player']} caption:")
@@ -787,7 +813,8 @@ class Bot:
             f"#{q['n']} {datetime.fromtimestamp(q['at']).strftime('%H:%M')} — {q['label']}"
             for q in queue)
         send(f"🗓 Posting schedule ({CADENCE_S / 3600:g}h cadence):\n{times}\n\n"
-             f"First reminder lands now; /stop_posting to cancel.")
+             f"First reminder lands now.",
+             buttons=[[("🛑 Stop reminders", "stop_posting")]])
 
     def start_redo(self, rest):
         if self.runner.active:
@@ -817,7 +844,8 @@ class Bot:
         prompt = redo_prompt(date_dir, manifest[idx], idx, parts[1])
         self.runner.start("redo", date_dir, prompt,
                           lambda ok, err: self._redo_done(date_dir, idx, ok, err))
-        send(f"🔁 Redoing #{idx + 1} {manifest[idx]['player']}: “{parts[1]}”")
+        send(f"🔁 Redoing #{idx + 1} {manifest[idx]['player']}: “{parts[1]}”",
+             buttons=[[("ℹ️ Status", "status"), ("🛑 Cancel", "cancel")]])
 
     def _redo_done(self, date_dir, idx, ok, err):
         self.state["active_run"] = None
@@ -881,7 +909,8 @@ def main():
         bot.state["awaiting_brief"] = True
         bot.state["last_prompt_date"] = datetime.now().strftime("%Y-%m-%d")
         save_state(bot.state)
-        send("🎬 What should the batch be about? Reply with a brief, or /skip.")
+        send("🎬 What should the batch be about? Reply with a brief.",
+             buttons=[[("⏭ Skip", "skip")]])
     bot.run_forever()
     return 0
 
