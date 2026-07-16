@@ -21,6 +21,9 @@ Config via environment (see ~/.config/hypebot/secrets.env):
   HYPEBOT_EDIT_SECONDS                    default 30
   HYPEBOT_RUN_TIMEOUT_HOURS               default 6
   HYPEBOT_CADENCE_HOURS                   default 3
+  HYPEBOT_MIN_FREE_GB                     default 60 (refuse batch below this)
+  HYPEBOT_KEEP_WORKDIRS                   default 4 (older ones pruned pre-batch)
+  HYPEBOT_PREFLIGHT                       default 1 (0 disables prune/disk/yt-dlp checks)
 """
 
 import http.client
@@ -57,6 +60,9 @@ BATCH_SIZE = int(os.environ.get("HYPEBOT_BATCH_SIZE", "5"))
 EDIT_SECONDS = int(os.environ.get("HYPEBOT_EDIT_SECONDS", "30"))
 RUN_TIMEOUT_S = float(os.environ.get("HYPEBOT_RUN_TIMEOUT_HOURS", "6")) * 3600
 CADENCE_S = float(os.environ.get("HYPEBOT_CADENCE_HOURS", "3")) * 3600
+MIN_FREE_GB = float(os.environ.get("HYPEBOT_MIN_FREE_GB", "60"))
+KEEP_WORKDIRS = int(os.environ.get("HYPEBOT_KEEP_WORKDIRS", "4"))
+PREFLIGHT = os.environ.get("HYPEBOT_PREFLIGHT", "1") != "0"
 TG_SIZE_CAP = 49 * 1024 * 1024
 PREVIEW_TARGET = 46 * 1024 * 1024
 STATE_FILE = Path.home() / ".local/state/hypebot/state.json"
@@ -627,11 +633,48 @@ class Bot:
             i += 1
         return d
 
+    def _prune_workdirs(self):
+        """Old workdirs are only needed for /redo and /last on the latest batch;
+        full-res deliverables were archived to VIDEOS_DIR at delivery time."""
+        protected = {Path(self.state.get("last_batch", {}).get("date_dir", "x")).name}
+        dirs = sorted(d for d in WORK_ROOT.iterdir()
+                      if d.is_dir() and d.name not in protected)
+        for d in dirs[:-KEEP_WORKDIRS] if KEEP_WORKDIRS else dirs:
+            try:
+                shutil.rmtree(d)
+                log(f"pruned old workdir {d}")
+            except OSError as e:
+                log(f"prune failed for {d}: {e}", "WARN")
+
+    def _ytdlp_ok(self):
+        try:
+            r = subprocess.run(
+                ["yt-dlp", "--simulate", "--quiet", "--no-warnings", "--no-playlist",
+                 "https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
+                capture_output=True, text=True, timeout=45)
+            return r.returncode == 0, r.stderr.strip()[-200:]
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+
     def start_batch(self, brief):
         if self.runner.active:
             send("⏳ A run is already active — /status or /cancel first.")
             return
         self.state["awaiting_brief"] = False
+        if PREFLIGHT:
+            self._prune_workdirs()
+            free_gb = shutil.disk_usage(WORK_ROOT).free / 1e9
+            if free_gb < MIN_FREE_GB:
+                send(f"❌ Not starting: only {free_gb:.0f}GB free under {WORK_ROOT} "
+                     f"(need {MIN_FREE_GB:.0f}GB even after pruning old workdirs). "
+                     f"Free up space and retry.")
+                save_state(self.state)
+                return
+            ok, why = self._ytdlp_ok()
+            if not ok:
+                self._safe_send(f"⚠️ yt-dlp preflight failed ({why or 'no detail'}) — "
+                                f"sourcing may 429. Starting anyway; if the run fails, "
+                                f"refresh the Vivaldi cookies.")
         date_dir = self._fresh_date_dir()
         self.state["active_run"] = {"kind": "batch", "date_dir": str(date_dir),
                                     "brief": brief, "started": time.time()}

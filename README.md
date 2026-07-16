@@ -12,6 +12,9 @@ only the configured chat id is honored.
 
 ## Flow
 
+0. Preflight: prune workdirs beyond the newest 4 (the latest batch is always
+   kept for `/redo`/`/last`), refuse if < 60 GB free, warn if a yt-dlp probe
+   fails (stale cookies → sourcing will 429).
 1. Brief in → `claude -p` (Fable 5, `--effort max`) works under
    `/mnt/games-nvme-gen4/hypebot/<date>/`, one workdir per edit, full SKILL.md
    quality loop, zero clip overlap. If the run dies on a genuine quota error

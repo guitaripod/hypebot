@@ -18,6 +18,7 @@ export HYPEBOT_WORK_ROOT="$tmp/work"
 export HYPEBOT_VIDEOS_DIR="$tmp/videos"
 export HYPEBOT_BATCH_SIZE="2"
 export HYPEBOT_EDIT_SECONDS="2"
+export HYPEBOT_PREFLIGHT="0"
 mkdir -p "$HOME"
 
 python3 "$here/mock_api.py" "$port" &
