@@ -1,8 +1,9 @@
 # hypebot
 
-Telegram-fronted daily automation for TikTok hype-edit batches. A long-running
-systemd user service long-polls a dedicated Telegram bot; every morning it asks
-what today's batch should be about, then a headless coding agent executes the
+Telegram-fronted automation for TikTok hype-edit batches. A long-running
+systemd user service long-polls a dedicated Telegram bot; twice a week (Mon +
+Thu by default, `HYPEBOT_PROMPT_DAYS`) it asks
+what the batch should be about, then a headless coding agent executes the
 [hype-edit skill](https://github.com/guitaripod/claudeconfig) end to end and the
 bot delivers the finished edits back — one album message with per-video TikTok
 captions, copy-paste caption messages, full-res files in `~/Videos/hype/<date>/`.
@@ -16,11 +17,24 @@ Runs are executed by the first available engine, in order:
    fallback when the Claude run dies on a usage/quota limit)
 
 Both receive the same prompt, which points at the skill's `SKILL.md` by absolute
-path, so the pipeline is engine-agnostic.
+path, so the pipeline is engine-agnostic. Fallback triggers only on genuine
+quota wording in the engine log (never on a pipeline failure that wrote
+`FAILED.md`), and a cancelled run never falls back.
+
+## Resilience
+
+- `active_run` is persisted in state; if the service restarts mid-run (systemd
+  kills the whole cgroup, engine included) the bot says so on boot, points at
+  the checkpointed workdir — and if rendering had already finished, delivers
+  the batch instead.
+- Transient Telegram 5xx/truncated responses are retried with backoff; `last_batch`
+  is saved before any delivery send, so `/last` can always retry the album.
+- Posting reminders that fail to send are re-queued (+2 min), not dropped.
 
 ## Telegram UX
 
-- **09:00 daily**: "What's today's batch about?" — reply free text, or `/skip`.
+- **09:00 on batch days (Mon/Thu)**: "What should this one be about?" — reply
+  free text, or `/skip`.
 - `/batch <brief>` — start a batch anytime.
 - Progress pings during the run (single edited message, no spam), sourced from
   the agent's `progress.log`.

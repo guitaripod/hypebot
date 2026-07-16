@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""hypebot — Telegram-fronted daily hype-edit batch automation.
+"""hypebot — Telegram-fronted hype-edit batch automation.
 
-Long-polls a dedicated Telegram bot. Every morning it asks what today's batch
-should be about; the reply (or /batch <brief> anytime) launches a headless
+Long-polls a dedicated Telegram bot. On prompt days (default Mon + Thu) it asks
+what the batch should be about; the reply (or /batch <brief> anytime) launches a headless
 Claude Code run that executes the hype-edit skill in batch mode. On success the
 finished edits land as ONE Telegram album (per-video TikTok captions), the
 captions repeat as copy-friendly single messages, and full-res files are copied
-to ~/Videos/hype/<date>/ for desktop posting. /start-posting then paces the
+to ~/Videos/hype/<date>/ for desktop posting. /start_posting then paces the
 3-hour posting cadence with reminder pings.
 
 Config via environment (see ~/.config/hypebot/secrets.env):
@@ -16,12 +16,14 @@ Config via environment (see ~/.config/hypebot/secrets.env):
   HYPEBOT_WORK_ROOT                       default /mnt/games-nvme-gen4/hypebot
   HYPEBOT_VIDEOS_DIR                      default ~/Videos/hype
   HYPEBOT_PROMPT_HOUR                     default 9
+  HYPEBOT_PROMPT_DAYS                     default mon,thu
   HYPEBOT_BATCH_SIZE                      default 5
   HYPEBOT_EDIT_SECONDS                    default 30
   HYPEBOT_RUN_TIMEOUT_HOURS               default 6
   HYPEBOT_CADENCE_HOURS                   default 3
 """
 
+import http.client
 import json
 import os
 import re
@@ -49,6 +51,8 @@ SKILL_MD = os.environ.get(
 WORK_ROOT = Path(os.environ.get("HYPEBOT_WORK_ROOT", "/mnt/games-nvme-gen4/hypebot"))
 VIDEOS_DIR = Path(os.environ.get("HYPEBOT_VIDEOS_DIR", str(Path.home() / "Videos/hype")))
 PROMPT_HOUR = int(os.environ.get("HYPEBOT_PROMPT_HOUR", "9"))
+PROMPT_DAYS = {d.strip()[:3].lower() for d in
+               os.environ.get("HYPEBOT_PROMPT_DAYS", "mon,thu").split(",") if d.strip()}
 BATCH_SIZE = int(os.environ.get("HYPEBOT_BATCH_SIZE", "5"))
 EDIT_SECONDS = int(os.environ.get("HYPEBOT_EDIT_SECONDS", "30"))
 RUN_TIMEOUT_S = float(os.environ.get("HYPEBOT_RUN_TIMEOUT_HOURS", "6")) * 3600
@@ -92,11 +96,15 @@ def load_state():
     return {}
 
 
+_STATE_LOCK = threading.Lock()
+
+
 def save_state(state):
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=1))
-    tmp.replace(STATE_FILE)
+    with _STATE_LOCK:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_FILE.with_suffix(f".tmp{threading.get_ident()}")
+        tmp.write_text(json.dumps(state, indent=1))
+        tmp.replace(STATE_FILE)
 
 
 def _multipart(fields, files):
@@ -107,9 +115,10 @@ def _multipart(fields, files):
             f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode()
         )
     for name, (filename, data) in files.items():
+        safe = re.sub(r'[\\"\r\n]', "_", filename)
         parts.append(
             (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; "
-             f"filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n").encode()
+             f"filename=\"{safe}\"\r\nContent-Type: application/octet-stream\r\n\r\n").encode()
             + data + b"\r\n"
         )
     parts.append(f"--{boundary}--\r\n".encode())
@@ -124,7 +133,7 @@ def api(method, payload=None, files=None, timeout=90):
     """
     url = f"{API_BASE}/bot{TOKEN}/{method}"
     last_err = None
-    for attempt in range(4):
+    for attempt in range(5):
         try:
             if files:
                 body, ctype = _multipart(payload or {}, files)
@@ -138,12 +147,18 @@ def api(method, payload=None, files=None, timeout=90):
         except urllib.error.HTTPError as e:
             try:
                 data = json.loads(e.read())
-            except Exception:
-                data = {"ok": False, "description": str(e)}
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            except (ValueError, OSError, http.client.HTTPException):
+                data = None
+            if data is None or e.code >= 500:
+                last_err = e
+                log(f"telegram {method} http {e.code} (attempt {attempt + 1})", "WARN")
+                time.sleep(min(2 ** attempt, 30))
+                continue
+        except (urllib.error.URLError, TimeoutError, OSError,
+                http.client.HTTPException, ValueError) as e:
             last_err = e
-            log(f"telegram {method} network error (attempt {attempt + 1}): {e}", "WARN")
-            time.sleep(2 ** attempt)
+            log(f"telegram {method} transport error (attempt {attempt + 1}): {e}", "WARN")
+            time.sleep(min(2 ** attempt, 30))
             continue
         if data.get("ok"):
             return data.get("result")
@@ -194,23 +209,31 @@ def make_preview(src, dst):
     if not meta:
         raise RuntimeError(f"ffprobe failed for {src.name}")
     dur = max(meta["dur"], 1.0)
-    kbps = int((PREVIEW_TARGET * 8 / dur - 192_000) / 1000)
-    for _ in range(4):
-        for codec in (["h264_nvenc", "-rc", "vbr", "-preset", "p5"], ["libx264", "-preset", "medium"]):
-            r = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
-                 "-c:v", codec[0], *codec[1:], "-b:v", f"{kbps}k",
-                 "-maxrate", f"{int(kbps * 1.1)}k", "-bufsize", f"{kbps * 2}k",
-                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(dst)],
-                capture_output=True, text=True)
-            if r.returncode == 0:
-                break
-        else:
-            raise RuntimeError(f"preview encode failed for {src.name}")
-        if dst.stat().st_size < TG_SIZE_CAP:
-            return
-        kbps = int(kbps * 0.85)
-    raise RuntimeError(f"preview for {src.name} won't fit under 50MB")
+    kbps = max(int((PREVIEW_TARGET * 8 / dur - 192_000) / 1000), 500)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".part.mp4")
+    try:
+        for _ in range(4):
+            for codec in (["h264_nvenc", "-rc", "vbr", "-preset", "p5"],
+                          ["libx264", "-preset", "medium"]):
+                r = subprocess.run(
+                    ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
+                     "-c:v", codec[0], *codec[1:], "-b:v", f"{kbps}k",
+                     "-maxrate", f"{int(kbps * 1.1)}k", "-bufsize", f"{kbps * 2}k",
+                     "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
+                     "-f", "mp4", str(tmp)],
+                    capture_output=True, text=True)
+                if r.returncode == 0:
+                    break
+            else:
+                raise RuntimeError(f"preview encode failed for {src.name}")
+            if tmp.stat().st_size < TG_SIZE_CAP:
+                tmp.replace(dst)
+                return
+            kbps = int(kbps * 0.85)
+        raise RuntimeError(f"preview for {src.name} won't fit under 50MB")
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def engines(prompt):
@@ -225,8 +248,9 @@ def engines(prompt):
 
 
 QUOTA_RE = re.compile(
-    r"usage limit|session limit|rate.?limit|out of (usage|quota)|quota exceeded"
-    r"|limit reached|limit will reset|resets \d|overloaded", re.I)
+    r"hit your (session|usage|weekly|5.hour)? ?limit|usage limit"
+    r"|out of (usage|quota)|quota exceeded|credit balance is too low"
+    r"|limit (reached|will reset) ?[·∙|]|resets \d{1,2}(:\d{2})? ?[ap]m", re.I)
 
 
 def batch_prompt(brief, date_dir, n, seconds):
@@ -260,7 +284,7 @@ Apply the feedback using the hype-edit skill's iteration loop (seg-grid review, 
 
 
 class Runner:
-    """Owns the single active claude -p subprocess and its delivery."""
+    """Owns the single active engine subprocess (claude -p, opencode fallback)."""
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -301,26 +325,34 @@ class Runner:
                 os.killpg(self.proc.pid, signal.SIGTERM)
 
     def _run(self, date_dir, prompt, on_done):
+        def done(ok, err):
+            try:
+                on_done(ok, err)
+            except Exception as e:
+                log(f"on_done crashed: {e}", "ERROR")
+
         date_dir.mkdir(parents=True, exist_ok=True)
         (date_dir / "FAILED.md").unlink(missing_ok=True)
         chain = engines(prompt)
         for i, (label, argv) in enumerate(chain):
             outcome, detail = self._run_engine(date_dir, label, argv)
             if outcome == "ok":
-                on_done(True, "")
+                done(True, "")
                 return
             if outcome in ("cancelled", "timeout"):
-                on_done(False, detail)
+                done(False, detail)
                 return
             has_next = i + 1 < len(chain)
-            if has_next and QUOTA_RE.search(detail):
+            quota_hit = (not (date_dir / "FAILED.md").exists()
+                         and QUOTA_RE.search(_tail_text(date_dir / "engine-run.log", 800)))
+            if has_next and quota_hit:
                 log(f"{label} quota-limited, falling back", "WARN")
                 try:
                     send(f"⏭ {label} hit its usage limit — switching to {chain[i + 1][0]}.")
                 except RuntimeError:
                     pass
                 continue
-            on_done(False, f"{label}: {detail}")
+            done(False, f"{label}: {detail}")
             return
 
     def _run_engine(self, date_dir, label, argv):
@@ -365,6 +397,8 @@ class Runner:
                     except RuntimeError as e:
                         log(f"progress ping failed: {e}", "WARN")
                 time.sleep(5)
+        if self.cancelled:
+            return "cancelled", "cancelled"
         if proc.returncode != 0:
             failed = date_dir / "FAILED.md"
             detail = failed.read_text()[:1500] if failed.exists() else _tail_text(
@@ -402,6 +436,8 @@ class Bot:
     def __init__(self):
         self.state = load_state()
         self.runner = Runner()
+        self._prompt_retry_at = 0.0
+        self._resending = threading.Event()
 
     def run_forever(self):
         WORK_ROOT.mkdir(parents=True, exist_ok=True)
@@ -413,6 +449,7 @@ class Bot:
             log(f"setMyCommands: {e}", "WARN")
         if "update_offset" not in self.state:
             self._drain_backlog()
+        self._recover_interrupted()
         log("hypebot online")
         while True:
             self._tick_schedule()
@@ -449,35 +486,70 @@ class Bot:
             self.state["update_offset"] = 0
         save_state(self.state)
 
+    def _recover_interrupted(self):
+        """Handle a run that was live when the previous process died.
+
+        The engine child shares the systemd cgroup, so any service stop/restart
+        killed it. If the batch had already rendered (manifest present) deliver
+        it now; otherwise point at the checkpointed workdir.
+        """
+        run = self.state.get("active_run")
+        if not run:
+            return
+        self.state["active_run"] = None
+        save_state(self.state)
+        date_dir = Path(run["date_dir"])
+        note = f"⚠️ hypebot restarted mid-{run['kind']} — the engine run was killed. "
+        if run["kind"] == "batch" and (date_dir / "deliver/manifest.json").exists():
+            try:
+                send(note + "Rendering had finished; delivering the batch now.")
+            except RuntimeError:
+                pass
+            self._batch_done(date_dir, run.get("brief", "(recovered)"), True, "")
+            return
+        try:
+            send(note + f"Workdir is checkpointed at {date_dir} — resume it in a live "
+                        f"session, or /batch to start fresh.")
+        except RuntimeError as e:
+            log(f"recovery notice failed: {e}", "WARN")
+
     def _tick_schedule(self):
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
-        if (now.hour >= PROMPT_HOUR and now.hour < 20
-                and self.state.get("last_prompt_date") != today
-                and not self.runner.active):
-            self.state["last_prompt_date"] = today
-            self.state["awaiting_brief"] = True
-            save_state(self.state)
-            try:
-                send("🎬 What's today's batch about? Reply with a brief, or /skip.")
-            except RuntimeError as e:
-                log(f"morning prompt failed: {e}", "WARN")
+        if (now.strftime("%a").lower() in PROMPT_DAYS
+                and now.hour >= PROMPT_HOUR and now.hour < 20
+                and self.state.get("last_prompt_date") != today):
+            if self.runner.active:
+                self.state["last_prompt_date"] = today
+                save_state(self.state)
+            elif time.time() >= self._prompt_retry_at:
+                try:
+                    send("🎬 Batch day — what should this one be about? "
+                         "Reply with a brief, or /skip.")
+                    self.state["last_prompt_date"] = today
+                    self.state["awaiting_brief"] = True
+                    save_state(self.state)
+                except RuntimeError as e:
+                    log(f"morning prompt failed, retrying in 10min: {e}", "WARN")
+                    self._prompt_retry_at = time.time() + 600
         queue = self.state.get("posting_queue") or []
         due = [q for q in queue if q["at"] <= time.time()]
         if due:
-            remaining = [q for q in queue if q["at"] > time.time()]
-            self.state["posting_queue"] = remaining
-            save_state(self.state)
+            keep = [q for q in queue if q["at"] > time.time()]
             for q in due:
                 try:
                     send(f"📤 Post #{q['n']} now — {q['label']}\n\n{q['caption']}")
                 except RuntimeError as e:
-                    log(f"posting reminder failed: {e}", "WARN")
-            if not remaining:
+                    log(f"posting reminder failed, re-queued +2min: {e}", "WARN")
+                    q["at"] = time.time() + 120
+                    keep.append(q)
+            self.state["posting_queue"] = sorted(keep, key=lambda q: q["at"])
+            save_state(self.state)
+            if not keep:
                 try:
                     send("🎉 That was the last one. Batch fully posted.")
                 except RuntimeError as e:
-                    log(f"posting reminder failed: {e}", "WARN")
+                    log(f"posting wrap-up failed: {e}", "WARN")
 
     def handle(self, text):
         cmd, _, rest = text.partition(" ")
@@ -526,7 +598,7 @@ class Bot:
     def _fresh_date_dir(self):
         base = WORK_ROOT / datetime.now().strftime("%Y-%m-%d")
         d, i = base, 2
-        while d.exists():
+        while d.exists() or (VIDEOS_DIR / d.name).exists():
             d = Path(f"{base}-{i}")
             i += 1
         return d
@@ -535,7 +607,11 @@ class Bot:
         if self.runner.active:
             send("⏳ A run is already active — /status or /cancel first.")
             return
+        self.state["awaiting_brief"] = False
         date_dir = self._fresh_date_dir()
+        self.state["active_run"] = {"kind": "batch", "date_dir": str(date_dir),
+                                    "brief": brief, "started": time.time()}
+        save_state(self.state)
         prompt = batch_prompt(brief, date_dir, BATCH_SIZE, EDIT_SECONDS)
         self.runner.start("batch", date_dir, prompt,
                           lambda ok, err: self._batch_done(date_dir, brief, ok, err))
@@ -544,17 +620,40 @@ class Bot:
         log(f"batch started: {brief!r} → {date_dir}")
 
     def _batch_done(self, date_dir, brief, ok, err):
+        self.state["active_run"] = None
+        save_state(self.state)
         if not ok:
-            send(f"❌ Batch failed: {err}\n\nWorkdir (checkpointed, resumable): {date_dir}")
-            log(f"batch failed: {err}", "ERROR")
+            if err == "cancelled":
+                self._safe_send(f"🛑 Cancelled. Workdir checkpointed at {date_dir}.")
+                log("batch cancelled")
+            else:
+                self._safe_send(f"❌ Batch failed: {err}\n\n"
+                                f"Workdir (checkpointed, resumable): {date_dir}")
+                log(f"batch failed: {err}", "ERROR")
             return
         try:
             manifest = self._validate(date_dir)
             out_dir = self._archive(date_dir, manifest, brief)
-            self._deliver(date_dir, manifest, out_dir, brief)
+            dropped = len(self.state.get("posting_queue") or [])
+            self.state["last_batch"] = {
+                "date_dir": str(date_dir), "out_dir": str(out_dir), "manifest": manifest}
+            self.state["posting_queue"] = []
+            save_state(self.state)
+            if dropped:
+                self._safe_send(f"ℹ️ Cleared {dropped} pending posting reminder(s) "
+                                f"from the previous batch.")
+            self._deliver(manifest, date_dir, out_dir, brief)
+            log(f"batch delivered → {out_dir}")
         except Exception as e:
-            send(f"❌ Batch finished but delivery failed: {e}\n\nFiles: {date_dir}/deliver/")
+            self._safe_send(f"❌ Batch finished but delivery hit an error: {e}\n\n"
+                            f"Full-res files: {date_dir}/deliver/ — /last retries the album.")
             log(f"delivery failed: {e}", "ERROR")
+
+    def _safe_send(self, text):
+        try:
+            send(text)
+        except RuntimeError as e:
+            log(f"send failed: {e}", "ERROR")
 
     def _validate(self, date_dir):
         mpath = date_dir / "deliver/manifest.json"
@@ -564,6 +663,11 @@ class Bot:
         if len(manifest) != BATCH_SIZE:
             raise RuntimeError(f"manifest has {len(manifest)} entries, expected {BATCH_SIZE}")
         for e in manifest:
+            for k in ("file", "player", "song", "caption"):
+                if not isinstance(e.get(k), str) or not e[k].strip():
+                    raise RuntimeError(f"manifest entry missing/empty '{k}': {e}")
+            if "/" in e["file"] or '"' in e["file"]:
+                raise RuntimeError(f"unsafe file name in manifest: {e['file']!r}")
             f = date_dir / "deliver" / e["file"]
             if not f.exists():
                 raise RuntimeError(f"missing file {e['file']}")
@@ -574,8 +678,6 @@ class Bot:
                 raise RuntimeError(f"{e['file']}: duration {meta['dur']:.1f}s, expected ~{EDIT_SECONDS}s")
             if (meta["w"], meta["h"]) != (1080, 1920):
                 raise RuntimeError(f"{e['file']}: {meta['w']}x{meta['h']}, expected 1080x1920")
-            if not e.get("caption"):
-                raise RuntimeError(f"{e['file']}: empty caption")
         return manifest
 
     def _archive(self, date_dir, manifest, brief):
@@ -589,7 +691,6 @@ class Bot:
 
     def _previews(self, date_dir, manifest):
         pdir = date_dir / "preview"
-        pdir.mkdir(exist_ok=True)
         paths = []
         for e in manifest:
             src = date_dir / "deliver" / e["file"]
@@ -597,12 +698,13 @@ class Bot:
                 paths.append(src)
             else:
                 dst = pdir / e["file"]
-                if not dst.exists() or dst.stat().st_size >= TG_SIZE_CAP:
+                if (not dst.exists() or dst.stat().st_size >= TG_SIZE_CAP
+                        or dst.stat().st_mtime < src.stat().st_mtime):
                     make_preview(src, dst)
                 paths.append(dst)
         return paths
 
-    def _deliver(self, date_dir, manifest, out_dir, brief):
+    def _deliver(self, manifest, date_dir, out_dir, brief):
         paths = self._previews(date_dir, manifest)
         songs = "\n".join(f"{i + 1}. {e['player']} × {e['song']}" for i, e in enumerate(manifest))
         send(f"✅ Batch done: “{brief}”\n\n{songs}\n\n"
@@ -613,11 +715,6 @@ class Bot:
         for i, e in enumerate(manifest):
             send(f"#{i + 1} {e['player']} caption:")
             send(e["caption"], silent=True)
-        self.state["last_batch"] = {
-            "date_dir": str(date_dir), "out_dir": str(out_dir), "manifest": manifest}
-        self.state["posting_queue"] = []
-        save_state(self.state)
-        log(f"batch delivered → {out_dir}")
 
     def _send_album(self, manifest, paths):
         media, files = [], {}
@@ -634,12 +731,18 @@ class Bot:
                 files=files, timeout=900)
         except RuntimeError as e:
             log(f"album failed ({e}), falling back to individual sends", "WARN")
-            send(f"Album send failed ({e}) — sending individually.")
-            for i, (entry, p) in enumerate(zip(manifest, paths)):
-                api("sendVideo",
-                    {"chat_id": CHAT_ID, "caption": entry["caption"][:1024],
-                     "supports_streaming": "true"},
-                    files={"video": (entry["file"], p.read_bytes())}, timeout=900)
+            self._safe_send(f"Album send failed ({e}) — sending individually.")
+            failures = []
+            for entry, p in zip(manifest, paths):
+                try:
+                    api("sendVideo",
+                        {"chat_id": CHAT_ID, "caption": entry["caption"][:1024],
+                         "supports_streaming": "true"},
+                        files={"video": (entry["file"], p.read_bytes())}, timeout=900)
+                except RuntimeError as ve:
+                    failures.append(f"{entry['file']}: {ve}")
+            if failures:
+                raise RuntimeError("individual sends failed — " + "; ".join(failures))
 
     def resend_last(self):
         last = self.state.get("last_batch")
@@ -650,7 +753,22 @@ class Bot:
         if not (date_dir / "deliver").exists():
             send(f"Workdir gone; full-res still at {last['out_dir']}")
             return
-        self._send_album(last["manifest"], self._previews(date_dir, last["manifest"]))
+        if self._resending.is_set():
+            send("⏳ Already re-sending.")
+            return
+        self._resending.set()
+        threading.Thread(target=self._resend_worker,
+                         args=(last["manifest"], date_dir), daemon=True).start()
+        send("📦 Re-sending the last album…", silent=True)
+
+    def _resend_worker(self, manifest, date_dir):
+        try:
+            self._send_album(manifest, self._previews(date_dir, manifest))
+        except Exception as e:
+            self._safe_send(f"❌ Re-send failed: {e}")
+            log(f"resend failed: {e}", "ERROR")
+        finally:
+            self._resending.clear()
 
     def start_posting(self):
         last = self.state.get("last_batch")
@@ -693,17 +811,23 @@ class Bot:
             send(f"Workdir {date_dir} is gone — can't redo, run a fresh /batch.")
             return
         (date_dir / "REDO_OK").unlink(missing_ok=True)
+        self.state["active_run"] = {"kind": "redo", "date_dir": str(date_dir),
+                                    "started": time.time()}
+        save_state(self.state)
         prompt = redo_prompt(date_dir, manifest[idx], idx, parts[1])
         self.runner.start("redo", date_dir, prompt,
                           lambda ok, err: self._redo_done(date_dir, idx, ok, err))
         send(f"🔁 Redoing #{idx + 1} {manifest[idx]['player']}: “{parts[1]}”")
 
     def _redo_done(self, date_dir, idx, ok, err):
+        self.state["active_run"] = None
+        save_state(self.state)
         if not ok:
-            send(f"❌ Redo failed: {err}")
+            self._safe_send("🛑 Redo cancelled." if err == "cancelled"
+                            else f"❌ Redo failed: {err}")
             return
         if not (date_dir / "REDO_OK").exists():
-            send("❌ Redo run ended without REDO_OK marker — inspect " + str(date_dir))
+            self._safe_send("❌ Redo run ended without REDO_OK marker — inspect " + str(date_dir))
             return
         try:
             manifest = json.loads((date_dir / "deliver/manifest.json").read_text())
@@ -715,6 +839,10 @@ class Bot:
             shutil.copy2(src, out_dir / entry["file"])
             (out_dir / "manifest.json").write_text(json.dumps(
                 {"date": date_dir.name, "edits": manifest}, indent=1))
+            for q in self.state.get("posting_queue") or []:
+                if q["n"] == idx + 1:
+                    q["caption"] = entry["caption"]
+                    q["label"] = f"{entry['player']} × {entry['song']} ({entry['file']})"
             save_state(self.state)
             p = src
             if src.stat().st_size >= TG_SIZE_CAP:
@@ -726,7 +854,7 @@ class Bot:
                 files={"video": (entry["file"], p.read_bytes())}, timeout=900)
             send(f"✅ Redo #{idx + 1} done — full-res updated at {out_dir}")
         except Exception as e:
-            send(f"❌ Redo delivery failed: {e}")
+            self._safe_send(f"❌ Redo delivery failed: {e}")
             log(f"redo delivery failed: {e}", "ERROR")
 
 
@@ -736,9 +864,24 @@ def main():
               "(see ~/.config/hypebot/secrets.env)", file=sys.stderr)
         return 2
     bot = Bot()
-    if "--prompt-now" in sys.argv:
-        bot.state.pop("last_prompt_date", None)
+
+    def on_sigterm(signum, frame):
+        run = bot.state.get("active_run")
+        if run and bot.runner.active:
+            try:
+                send(f"🛑 hypebot stopping — {run['kind']} interrupted; workdir "
+                     f"checkpointed at {run['date_dir']}.")
+            except Exception:
+                pass
         save_state(bot.state)
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, on_sigterm)
+    if "--prompt-now" in sys.argv:
+        bot.state["awaiting_brief"] = True
+        bot.state["last_prompt_date"] = datetime.now().strftime("%Y-%m-%d")
+        save_state(bot.state)
+        send("🎬 What should the batch be about? Reply with a brief, or /skip.")
     bot.run_forever()
     return 0
 
