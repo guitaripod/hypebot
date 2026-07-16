@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+n="${HYPEBOT_BATCH_SIZE:-2}"
+secs="${HYPEBOT_EDIT_SECONDS:-2}"
+echo "sourcing | fake engine warming up" >> progress.log
+mkdir -p deliver
+manifest="["
+for i in $(seq 1 "$n"); do
+  f=$(printf "%02d_player%d_song%d.mp4" "$i" "$i" "$i")
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "testsrc2=size=1080x1920:rate=30:duration=$secs" \
+    -f lavfi -i "sine=frequency=440:duration=$secs" \
+    -c:v libx264 -preset ultrafast -c:a aac -shortest "deliver/$f"
+  echo "render | edit$i done" >> progress.log
+  [ "$i" -gt 1 ] && manifest+=","
+  manifest+="{\"file\": \"$f\", \"player\": \"Player$i\", \"song\": \"Song$i\", \"caption\": \"caption $i 🔥 #test\"}"
+done
+manifest+="]"
+echo "qc | all edits ALL GATES PASS" >> progress.log
+echo "$manifest" > deliver/manifest.json
