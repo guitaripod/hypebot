@@ -18,7 +18,7 @@ Config via environment (see ~/.config/hypebot/secrets.env):
   HYPEBOT_PROMPT_HOUR                     default 9
   HYPEBOT_PROMPT_DAYS                     default mon,thu
   HYPEBOT_BATCH_SIZE                      default 5
-  HYPEBOT_EDIT_SECONDS                    default 30
+  HYPEBOT_EDIT_SECONDS                    default 15
   HYPEBOT_RUN_TIMEOUT_HOURS               default 6
   HYPEBOT_CADENCE_HOURS                   default 3
   HYPEBOT_MIN_FREE_GB                     default 60 (refuse batch below this)
@@ -61,7 +61,7 @@ PROMPT_HOUR = int(os.environ.get("HYPEBOT_PROMPT_HOUR", "9"))
 PROMPT_DAYS = {d.strip()[:3].lower() for d in
                os.environ.get("HYPEBOT_PROMPT_DAYS", "mon,thu").split(",") if d.strip()}
 BATCH_SIZE = int(os.environ.get("HYPEBOT_BATCH_SIZE", "5"))
-EDIT_SECONDS = int(os.environ.get("HYPEBOT_EDIT_SECONDS", "30"))
+EDIT_SECONDS = int(os.environ.get("HYPEBOT_EDIT_SECONDS", "15"))
 RUN_TIMEOUT_S = float(os.environ.get("HYPEBOT_RUN_TIMEOUT_HOURS", "6")) * 3600
 CADENCE_S = float(os.environ.get("HYPEBOT_CADENCE_HOURS", "3")) * 3600
 MIN_FREE_GB = float(os.environ.get("HYPEBOT_MIN_FREE_GB", "60"))
@@ -273,7 +273,7 @@ def batch_prompt(brief, date_dir, n, seconds):
 Marcus's brief for today: "{brief}"
 
 Parameters:
-- {n} edits, each {seconds}s, vertical 1080x1920@30, song pitch-shifted +3% (extract_audio.py --pitch 1.03).
+- {n} edits, each {seconds}s, REMASTER style (extract_audio.py --style remaster --pitch 1.03): full-bleed 90deg-rotated landscape at 1080x1920@60, 4K-remaster grade, slow-mo motion-interpolated, iconic moments only — per SKILL.md "Styles".
 - Work under {date_dir}/ — one workdir per edit (edit1..edit{n}). Share the source pool per SKILL.md batch mode where subjects overlap; enforce ZERO clip overlap across edits by cascading exclude_clips.
 - Song selection: current edit-culture/phonk-leaning picks appropriate to the brief; web-search to confirm relevance/trendiness today. Read {VIDEOS_DIR}/*/manifest.json (if any exist) and avoid repeating recent song or player+song combos.
 - Quality bar is the full SKILL.md loop, no shortcuts: seg-grid review rounds until clean, opener retention gate, segment-level hero verification, render-exact probing, and qc.py printing "ALL GATES PASS" for every edit.

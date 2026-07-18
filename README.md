@@ -22,7 +22,9 @@ only the configured chat id is honored.
    (never on a pipeline failure or `/cancel`), it reruns on grok-4.5 via
    `opencode --variant high`.
 2. Agent writes `deliver/manifest.json` last — that's the success signal. The
-   bot validates every entry (file, 1080×1920, ~30 s, audio, caption).
+   bot validates every entry (file, 1080×1920, ~15 s, audio, caption).
+   Edits use the skill's **remaster** style: full-bleed 90°-rotated landscape
+   at 60 fps, 4K-remaster grade, motion-interpolated slow-mo.
 3. Full-res → `~/Videos/hype/<date>/`. Files ≥ 49 MB get a ~46 MB preview
    encode for Telegram (bot upload cap is 50 MB); disk copies stay untouched.
 4. Progress streams from the agent's `progress.log` into a single edited
