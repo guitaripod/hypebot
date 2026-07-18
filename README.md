@@ -4,8 +4,9 @@ Telegram bot that runs TikTok hype-edit batches hands-free. On batch days
 (Mon + Thu, 09:00) it asks what the batch should be about; the reply — or
 `/batch <brief>` anytime — launches a headless agent that executes the
 [hype-edit skill](https://github.com/guitaripod/claudeconfig) end to end.
-Back comes one album message (5 videos, TikTok captions attached),
-copy-paste caption messages, and full-res files in `~/Videos/hype/<date>/`.
+Back come two album messages (5 portrait TikTok videos + their 5 landscape
+companions), copy-paste caption messages, and full-res files in
+`~/Videos/hype/<date>/`.
 
 Deployed as the `hypebot` systemd user service, talking to **@hype_edit_bot**;
 only the configured chat id is honored.
@@ -22,7 +23,8 @@ only the configured chat id is honored.
    (never on a pipeline failure or `/cancel`), it reruns on grok-4.5 via
    `opencode --variant high`.
 2. Agent writes `deliver/manifest.json` last — that's the success signal. The
-   bot validates every entry (file, 1080×1920, ~15 s, audio, caption).
+   bot validates every entry (portrait 1080×1920 + landscape 1920×1080
+   companion, ~15 s, audio, caption).
    Edits use the skill's **remaster** style: full-bleed 90°-rotated landscape
    at 60 fps, 4K-remaster grade, motion-interpolated slow-mo.
 3. Full-res → `~/Videos/hype/<date>/`. Files ≥ 49 MB get a ~46 MB preview

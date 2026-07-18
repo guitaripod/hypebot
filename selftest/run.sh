@@ -51,14 +51,21 @@ keys = [b["callback_data"] for row in done["reply_markup"]["inline_keyboard"] fo
 assert keys == ["start_posting"], keys
 assert any("caption 1" in t for t in sends), sends
 assert any("caption 2" in t for t in sends), sends
-mg = next(c for c in calls if c["method"] == "sendMediaGroup")
-media = json.loads(mg["payload"]["media"])
-assert len(media) == 2, media
-assert all(m["type"] == "video" and m["caption"] for m in media), media
-files = {f["field"] for f in mg["payload"].get("_files", [])}
-assert files == {"v0", "v1"}, files
+albums = [c for c in calls if c["method"] == "sendMediaGroup"]
+assert len(albums) == 2, [a["payload"].get("media") for a in albums]
+for mg in albums:
+    media = json.loads(mg["payload"]["media"])
+    assert len(media) == 2, media
+    assert all(m["type"] == "video" and m["caption"] for m in media), media
+    files = {f["field"] for f in mg["payload"].get("_files", [])}
+    assert files == {"v0", "v1"}, files
+ls_media = json.loads(albums[1]["payload"]["media"])
+assert all("landscape" in m["caption"] for m in ls_media), ls_media
+names = {f["filename"] for a in albums for f in a["payload"].get("_files", [])}
+assert sum("_landscape" in n for n in names) == 2, names
 vids = glob.glob(os.path.join(sys.argv[2], "*", "*.mp4"))
-assert len(vids) == 2, vids
+assert len(vids) == 4, vids
+assert sum("_landscape" in v for v in vids) == 2, vids
 manifests = glob.glob(os.path.join(sys.argv[2], "*", "manifest.json"))
 assert len(manifests) == 1 and "selftest brief" in open(manifests[0]).read(), manifests
 print("assertions ok")

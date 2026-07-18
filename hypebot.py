@@ -273,7 +273,7 @@ def batch_prompt(brief, date_dir, n, seconds):
 Marcus's brief for today: "{brief}"
 
 Parameters:
-- {n} edits, each {seconds}s, REMASTER style (extract_audio.py --style remaster --pitch 1.03): full-bleed 90deg-rotated landscape at 1080x1920@60, 4K-remaster grade, slow-mo motion-interpolated, iconic moments only — per SKILL.md "Styles".
+- {n} edits, each {seconds}s, REMASTER style (extract_audio.py --style remaster --pitch 1.03): full-bleed 90deg-rotated landscape at 1080x1920@60, 4K-remaster grade, slow-mo motion-interpolated, iconic moments only — per SKILL.md "Styles". Every edit also gets its landscape companion (render.py --landscape, 1920x1080@60).
 - Work under {date_dir}/ — one workdir per edit (edit1..edit{n}). Share the source pool per SKILL.md batch mode where subjects overlap; enforce ZERO clip overlap across edits by cascading exclude_clips.
 - Song selection: current edit-culture/phonk-leaning picks appropriate to the brief; web-search to confirm relevance/trendiness today. Read {VIDEOS_DIR}/*/manifest.json (if any exist) and avoid repeating recent song or player+song combos.
 - Quality bar is the full SKILL.md loop, no shortcuts: seg-grid review rounds until clean, opener retention gate, segment-level hero verification, render-exact probing, and qc.py printing "ALL GATES PASS" for every edit.
@@ -282,8 +282,8 @@ Parameters:
 Progress protocol: append one line to {date_dir}/progress.log at every milestone, format "phase | detail" (e.g. "sourcing | edit2: 14 sources fetched", "review | edit4: round 2 clean"). The Telegram bot relays these to Marcus.
 
 Delivery contract (STRICT):
-1. Only after every edit passes qc, create {date_dir}/deliver/ containing the final mp4s named 01_<player>_<song>.mp4 .. {n:02d}_<player>_<song>.mp4 in recommended posting order.
-2. Write {date_dir}/deliver/manifest.json LAST — its existence signals success. JSON array, posting order, entries: {{"file": "<name in deliver/>", "player": "...", "song": "...", "caption": "..."}}.
+1. Only after every edit passes qc, create {date_dir}/deliver/ containing the final mp4s named 01_<player>_<song>.mp4 .. {n:02d}_<player>_<song>.mp4 in recommended posting order, PLUS each edit's landscape companion named 01_<player>_<song>_landscape.mp4 etc.
+2. Write {date_dir}/deliver/manifest.json LAST — its existence signals success. JSON array, posting order, entries: {{"file": "<name in deliver/>", "landscape": "<landscape name in deliver/>", "player": "...", "song": "...", "caption": "..."}}.
 3. If something fails irrecoverably, write {date_dir}/FAILED.md (what failed, where to resume) and exit nonzero. Never write a partial manifest."""
 
 
@@ -294,7 +294,7 @@ Edit #{idx + 1}: {entry['player']} × {entry['song']} → deliver/{entry['file']
 
 Marcus's feedback: "{feedback}"
 
-Apply the feedback using the hype-edit skill's iteration loop (seg-grid review, exclude_clips, hero_overrides — read {SKILL_MD} fully). Re-render, re-run qc until "ALL GATES PASS", then overwrite deliver/{entry['file']} and update this entry's caption in deliver/manifest.json if the feedback warrants it. Append progress lines to {date_dir}/progress.log. Touch nothing belonging to the other edits. On success write {date_dir}/REDO_OK, on irrecoverable failure write {date_dir}/FAILED.md and exit nonzero."""
+Apply the feedback using the hype-edit skill's iteration loop (seg-grid review, exclude_clips, hero_overrides — read {SKILL_MD} fully). Re-render (portrait AND --landscape), re-run qc until "ALL GATES PASS", then overwrite deliver/{entry['file']} + deliver/{entry.get('landscape', entry['file'].replace('.mp4', '_landscape.mp4'))} and update this entry's caption in deliver/manifest.json if the feedback warrants it. Append progress lines to {date_dir}/progress.log. Touch nothing belonging to the other edits. On success write {date_dir}/REDO_OK, on irrecoverable failure write {date_dir}/FAILED.md and exit nonzero."""
 
 
 class Runner:
@@ -735,21 +735,22 @@ class Bot:
         if len(manifest) != BATCH_SIZE:
             raise RuntimeError(f"manifest has {len(manifest)} entries, expected {BATCH_SIZE}")
         for e in manifest:
-            for k in ("file", "player", "song", "caption"):
+            for k in ("file", "landscape", "player", "song", "caption"):
                 if not isinstance(e.get(k), str) or not e[k].strip():
                     raise RuntimeError(f"manifest entry missing/empty '{k}': {e}")
-            if "/" in e["file"] or '"' in e["file"]:
-                raise RuntimeError(f"unsafe file name in manifest: {e['file']!r}")
-            f = date_dir / "deliver" / e["file"]
-            if not f.exists():
-                raise RuntimeError(f"missing file {e['file']}")
-            meta = ffprobe(f)
-            if not meta or not meta["audio"]:
-                raise RuntimeError(f"{e['file']}: unreadable or no audio")
-            if abs(meta["dur"] - EDIT_SECONDS) > 3:
-                raise RuntimeError(f"{e['file']}: duration {meta['dur']:.1f}s, expected ~{EDIT_SECONDS}s")
-            if (meta["w"], meta["h"]) != (1080, 1920):
-                raise RuntimeError(f"{e['file']}: {meta['w']}x{meta['h']}, expected 1080x1920")
+            for k, dims in (("file", (1080, 1920)), ("landscape", (1920, 1080))):
+                if "/" in e[k] or '"' in e[k]:
+                    raise RuntimeError(f"unsafe file name in manifest: {e[k]!r}")
+                f = date_dir / "deliver" / e[k]
+                if not f.exists():
+                    raise RuntimeError(f"missing file {e[k]}")
+                meta = ffprobe(f)
+                if not meta or not meta["audio"]:
+                    raise RuntimeError(f"{e[k]}: unreadable or no audio")
+                if abs(meta["dur"] - EDIT_SECONDS) > 3:
+                    raise RuntimeError(f"{e[k]}: duration {meta['dur']:.1f}s, expected ~{EDIT_SECONDS}s")
+                if (meta["w"], meta["h"]) != dims:
+                    raise RuntimeError(f"{e[k]}: {meta['w']}x{meta['h']}, expected {dims[0]}x{dims[1]}")
         return manifest
 
     def _archive(self, date_dir, manifest, brief):
@@ -757,19 +758,20 @@ class Bot:
         out_dir.mkdir(parents=True, exist_ok=True)
         for e in manifest:
             shutil.copy2(date_dir / "deliver" / e["file"], out_dir / e["file"])
+            shutil.copy2(date_dir / "deliver" / e["landscape"], out_dir / e["landscape"])
         (out_dir / "manifest.json").write_text(json.dumps(
             {"brief": brief, "date": date_dir.name, "edits": manifest}, indent=1))
         return out_dir
 
-    def _previews(self, date_dir, manifest):
+    def _previews(self, date_dir, manifest, key="file"):
         pdir = date_dir / "preview"
         paths = []
         for e in manifest:
-            src = date_dir / "deliver" / e["file"]
+            src = date_dir / "deliver" / e[key]
             if src.stat().st_size < TG_SIZE_CAP:
                 paths.append(src)
             else:
-                dst = pdir / e["file"]
+                dst = pdir / e[key]
                 if (not dst.exists() or dst.stat().st_size >= TG_SIZE_CAP
                         or dst.stat().st_mtime < src.stat().st_mtime):
                     make_preview(src, dst)
@@ -778,42 +780,49 @@ class Bot:
 
     def _deliver(self, manifest, date_dir, out_dir, brief):
         paths = self._previews(date_dir, manifest)
+        ls_paths = self._previews(date_dir, manifest, key="landscape")
         songs = "\n".join(f"{i + 1}. {e['player']} × {e['song']}" for i, e in enumerate(manifest))
         send(f"✅ Batch done: “{brief}”\n\n{songs}\n\n"
              f"Full-res on disk: {out_dir}\n"
-             f"Album + copy-paste captions incoming. Tap ▶️ when you start posting "
+             f"Album (portrait), landscape album + copy-paste captions incoming. "
+             f"Tap ▶️ when you start posting "
              f"(pings every {CADENCE_S / 3600:g}h, posting order below).",
              buttons=[[("▶️ Start posting", "start_posting")]])
         self._send_album(manifest, paths)
+        self._send_album(manifest, ls_paths, key="landscape",
+                         captions=[f"#{i + 1} {e['player']} — landscape"
+                                   for i, e in enumerate(manifest)])
         for i, e in enumerate(manifest):
             send(f"#{i + 1} {e['player']} caption:")
             send(e["caption"], silent=True)
 
-    def _send_album(self, manifest, paths):
+    def _send_album(self, manifest, paths, key="file", captions=None):
         media, files = [], {}
         for i, (e, p) in enumerate(zip(manifest, paths)):
-            key = f"v{i}"
+            k = f"v{i}"
             meta = ffprobe(p) or {"w": 1080, "h": 1920, "dur": EDIT_SECONDS}
-            media.append({"type": "video", "media": f"attach://{key}",
-                          "caption": e["caption"][:1024],
+            cap = captions[i] if captions else e["caption"]
+            media.append({"type": "video", "media": f"attach://{k}",
+                          "caption": cap[:1024],
                           "width": meta["w"], "height": meta["h"],
                           "duration": int(meta["dur"]), "supports_streaming": True})
-            files[key] = (e["file"], p.read_bytes())
+            files[k] = (e[key], p.read_bytes())
         try:
             api("sendMediaGroup", {"chat_id": CHAT_ID, "media": json.dumps(media)},
                 files=files, timeout=900)
-        except RuntimeError as e:
-            log(f"album failed ({e}), falling back to individual sends", "WARN")
-            self._safe_send(f"Album send failed ({e}) — sending individually.")
+        except RuntimeError as err:
+            log(f"album failed ({err}), falling back to individual sends", "WARN")
+            self._safe_send(f"Album send failed ({err}) — sending individually.")
             failures = []
-            for entry, p in zip(manifest, paths):
+            for i, (entry, p) in enumerate(zip(manifest, paths)):
+                cap = captions[i] if captions else entry["caption"]
                 try:
                     api("sendVideo",
-                        {"chat_id": CHAT_ID, "caption": entry["caption"][:1024],
+                        {"chat_id": CHAT_ID, "caption": cap[:1024],
                          "supports_streaming": "true"},
-                        files={"video": (entry["file"], p.read_bytes())}, timeout=900)
+                        files={"video": (entry[key], p.read_bytes())}, timeout=900)
                 except RuntimeError as ve:
-                    failures.append(f"{entry['file']}: {ve}")
+                    failures.append(f"{entry[key]}: {ve}")
             if failures:
                 raise RuntimeError("individual sends failed — " + "; ".join(failures))
 
