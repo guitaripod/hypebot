@@ -62,7 +62,7 @@ PROMPT_DAYS = {d.strip()[:3].lower() for d in
                os.environ.get("HYPEBOT_PROMPT_DAYS", "mon,thu").split(",") if d.strip()}
 BATCH_SIZE = int(os.environ.get("HYPEBOT_BATCH_SIZE", "5"))
 EDIT_SECONDS = int(os.environ.get("HYPEBOT_EDIT_SECONDS", "15"))
-RUN_TIMEOUT_S = float(os.environ.get("HYPEBOT_RUN_TIMEOUT_HOURS", "6")) * 3600
+RUN_TIMEOUT_S = float(os.environ.get("HYPEBOT_RUN_TIMEOUT_HOURS", "10")) * 3600
 CADENCE_S = float(os.environ.get("HYPEBOT_CADENCE_HOURS", "3")) * 3600
 MIN_FREE_GB = float(os.environ.get("HYPEBOT_MIN_FREE_GB", "60"))
 KEEP_WORKDIRS = int(os.environ.get("HYPEBOT_KEEP_WORKDIRS", "4"))
@@ -277,6 +277,7 @@ Parameters:
 - Work under {date_dir}/ — one workdir per edit (edit1..edit{n}). Share the source pool per SKILL.md batch mode where subjects overlap; enforce ZERO clip overlap across edits by cascading exclude_clips.
 - Song selection: current edit-culture/phonk-leaning picks appropriate to the brief; web-search to confirm relevance/trendiness today. Read {VIDEOS_DIR}/*/manifest.json (if any exist) and avoid repeating recent song or player+song combos.
 - Quality bar is the full SKILL.md loop, no shortcuts: seg-grid review rounds until clean, opener retention gate (subject clearly in view from frame one), the song's main hook as the centerpiece (drop mid-edit with the most iconic moment detonating exactly on it), segment-level hero verification, render-exact probing, and qc.py printing "ALL GATES PASS" for every edit.
+- Production optimizes for QUALITY, not speed: after each edit's cut is locked, run the SeedVR2 restoration stage (restore.py — all segments, one edit at a time, it needs the GPU to itself) and re-render both orientations before final qc.
 - Captions: engagement-optimized TikTok captions with hashtags per the established style.
 
 Progress protocol: append one line to {date_dir}/progress.log at every milestone, format "phase | detail" (e.g. "sourcing | edit2: 14 sources fetched", "review | edit4: round 2 clean"). The Telegram bot relays these to Marcus.
