@@ -276,7 +276,7 @@ Parameters:
 - {n} edits, each {seconds}s, REMASTER style (extract_audio.py --style remaster --pitch 1.03): full-bleed 90deg-rotated landscape at 1080x1920@60, 4K-remaster grade, slow-mo motion-interpolated, iconic moments only — per SKILL.md "Styles". Every edit also gets its landscape companion (render.py --landscape, 1920x1080@60).
 - Work under {date_dir}/ — one workdir per edit (edit1..edit{n}). Share the source pool per SKILL.md batch mode where subjects overlap; enforce ZERO clip overlap across edits by cascading exclude_clips.
 - Song selection: current edit-culture/phonk-leaning picks appropriate to the brief; web-search to confirm relevance/trendiness today. Read {VIDEOS_DIR}/*/manifest.json (if any exist) and avoid repeating recent song or player+song combos.
-- Quality bar is the full SKILL.md loop, no shortcuts: seg-grid review rounds until clean, opener retention gate, segment-level hero verification, render-exact probing, and qc.py printing "ALL GATES PASS" for every edit.
+- Quality bar is the full SKILL.md loop, no shortcuts: seg-grid review rounds until clean, opener retention gate (subject clearly in view from frame one), the song's main hook as the centerpiece (drop mid-edit with the most iconic moment detonating exactly on it), segment-level hero verification, render-exact probing, and qc.py printing "ALL GATES PASS" for every edit.
 - Captions: engagement-optimized TikTok captions with hashtags per the established style.
 
 Progress protocol: append one line to {date_dir}/progress.log at every milestone, format "phase | detail" (e.g. "sourcing | edit2: 14 sources fetched", "review | edit4: round 2 clean"). The Telegram bot relays these to Marcus.
@@ -779,18 +779,16 @@ class Bot:
         return paths
 
     def _deliver(self, manifest, date_dir, out_dir, brief):
-        paths = self._previews(date_dir, manifest)
         ls_paths = self._previews(date_dir, manifest, key="landscape")
         songs = "\n".join(f"{i + 1}. {e['player']} × {e['song']}" for i, e in enumerate(manifest))
         send(f"✅ Batch done: “{brief}”\n\n{songs}\n\n"
-             f"Full-res on disk: {out_dir}\n"
-             f"Album (portrait), landscape album + copy-paste captions incoming. "
+             f"Full-res (portrait + landscape) on disk: {out_dir}\n"
+             f"Landscape album + copy-paste captions incoming. "
              f"Tap ▶️ when you start posting "
              f"(pings every {CADENCE_S / 3600:g}h, posting order below).",
              buttons=[[("▶️ Start posting", "start_posting")]])
-        self._send_album(manifest, paths)
         self._send_album(manifest, ls_paths, key="landscape",
-                         captions=[f"#{i + 1} {e['player']} — landscape"
+                         captions=[f"#{i + 1} {e['player']} × {e['song']}"
                                    for i, e in enumerate(manifest)])
         for i, e in enumerate(manifest):
             send(f"#{i + 1} {e['player']} caption:")
@@ -845,7 +843,8 @@ class Bot:
 
     def _resend_worker(self, manifest, date_dir):
         try:
-            self._send_album(manifest, self._previews(date_dir, manifest))
+            self._send_album(manifest, self._previews(date_dir, manifest, key="landscape"),
+                             key="landscape")
         except Exception as e:
             self._safe_send(f"❌ Re-send failed: {e}")
             log(f"resend failed: {e}", "ERROR")

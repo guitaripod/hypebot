@@ -4,8 +4,8 @@ Telegram bot that runs TikTok hype-edit batches hands-free. On batch days
 (Mon + Thu, 09:00) it asks what the batch should be about; the reply — or
 `/batch <brief>` anytime — launches a headless agent that executes the
 [hype-edit skill](https://github.com/guitaripod/claudeconfig) end to end.
-Back come two album messages (5 portrait TikTok videos + their 5 landscape
-companions), copy-paste caption messages, and full-res files in
+Back come one album message (the 5 landscape videos — Telegram gets landscape
+only), copy-paste caption messages, and full-res files in both orientations in
 `~/Videos/hype/<date>/`.
 
 Deployed as the `hypebot` systemd user service, talking to **@hype_edit_bot**;
