@@ -60,7 +60,7 @@ def _resolve_bin(name):
 
 
 CLAUDE_BIN = _resolve_bin(os.environ.get("HYPEBOT_CLAUDE", "claude"))
-CLAUDE_MODEL = os.environ.get("HYPEBOT_CLAUDE_MODEL", "claude-fable-5")
+CLAUDE_MODEL = os.environ.get("HYPEBOT_CLAUDE_MODEL", "claude-opus-4-8")
 CLAUDE_EFFORT = os.environ.get("HYPEBOT_EFFORT", "high")
 OPENCODE_BIN = _resolve_bin(os.environ.get("HYPEBOT_OPENCODE", "opencode"))
 OPENCODE_MODEL = os.environ.get("HYPEBOT_OPENCODE_MODEL", "xai/grok-4.5")
