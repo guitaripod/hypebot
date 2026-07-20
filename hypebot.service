@@ -3,6 +3,7 @@ Description=hypebot - Telegram-fronted hype-edit batch automation
 After=network-online.target
 
 [Service]
+Environment=PATH=%h/.cargo/bin:%h/.local/bin:%h/.local/share/swiftly/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/opt/cuda/bin:/var/lib/flatpak/exports/bin:/usr/lib/jvm/default/bin:/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl:/usr/lib/rustup/bin
 EnvironmentFile=%h/.config/hypebot/secrets.env
 ExecStart=%h/Dev/hypebot/hypebot.py
 Restart=on-failure

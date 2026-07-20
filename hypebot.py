@@ -47,10 +47,22 @@ from pathlib import Path
 TOKEN = os.environ.get("HYPEBOT_TOKEN", "")
 CHAT_ID = os.environ.get("HYPEBOT_CHAT_ID", "")
 API_BASE = os.environ.get("HYPEBOT_API_BASE", "https://api.telegram.org")
-CLAUDE_BIN = os.environ.get("HYPEBOT_CLAUDE", "claude")
+def _resolve_bin(name):
+    """Resolve a launcher to an absolute path so we don't depend on the
+    service's PATH (systemd --user omits ~/.local/bin, where claude lives)."""
+    if os.path.sep in name:
+        return name
+    found = shutil.which(name)
+    if found:
+        return found
+    fallback = Path.home() / ".local/bin" / name
+    return str(fallback) if fallback.exists() else name
+
+
+CLAUDE_BIN = _resolve_bin(os.environ.get("HYPEBOT_CLAUDE", "claude"))
 CLAUDE_MODEL = os.environ.get("HYPEBOT_CLAUDE_MODEL", "claude-fable-5")
 CLAUDE_EFFORT = os.environ.get("HYPEBOT_EFFORT", "high")
-OPENCODE_BIN = os.environ.get("HYPEBOT_OPENCODE", "opencode")
+OPENCODE_BIN = _resolve_bin(os.environ.get("HYPEBOT_OPENCODE", "opencode"))
 OPENCODE_MODEL = os.environ.get("HYPEBOT_OPENCODE_MODEL", "xai/grok-4.5")
 OPENCODE_VARIANT = os.environ.get("HYPEBOT_OPENCODE_VARIANT", "high")
 SKILL_MD = os.environ.get(
