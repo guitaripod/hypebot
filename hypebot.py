@@ -4,8 +4,8 @@
 Long-polls a dedicated Telegram bot. On prompt days (default Mon + Thu) it asks
 what the batch should be about; the reply (or /batch <brief> anytime) launches a headless
 Claude Code run that executes the hype-edit skill in batch mode. On success the
-finished edits land as ONE Telegram album (per-video TikTok captions), the
-captions repeat as copy-friendly single messages, and full-res files are copied
+finished portrait TikTok renders land as ONE Telegram album (each carrying its
+TikTok caption), and full-res files (portrait + landscape) are copied
 to ~/Videos/hype/<date>/ for desktop posting. /start_posting then paces the
 3-hour posting cadence with reminder pings.
 
@@ -792,20 +792,15 @@ class Bot:
         return paths
 
     def _deliver(self, manifest, date_dir, out_dir, brief):
-        ls_paths = self._previews(date_dir, manifest, key="landscape")
+        paths = self._previews(date_dir, manifest, key="file")
         songs = "\n".join(f"{i + 1}. {e['player']} × {e['song']}" for i, e in enumerate(manifest))
         send(f"✅ Batch done: “{brief}”\n\n{songs}\n\n"
              f"Full-res (portrait + landscape) on disk: {out_dir}\n"
-             f"Landscape album + copy-paste captions incoming. "
+             f"TikTok renders (with captions) incoming. "
              f"Tap ▶️ when you start posting "
              f"(pings every {CADENCE_S / 3600:g}h, posting order below).",
              buttons=[[("▶️ Start posting", "start_posting")]])
-        self._send_album(manifest, ls_paths, key="landscape",
-                         captions=[f"#{i + 1} {e['player']} × {e['song']}"
-                                   for i, e in enumerate(manifest)])
-        for i, e in enumerate(manifest):
-            send(f"#{i + 1} {e['player']} caption:")
-            send(e["caption"], silent=True)
+        self._send_album(manifest, paths, key="file")
 
     def _send_album(self, manifest, paths, key="file", captions=None):
         media, files = [], {}
@@ -856,8 +851,8 @@ class Bot:
 
     def _resend_worker(self, manifest, date_dir):
         try:
-            self._send_album(manifest, self._previews(date_dir, manifest, key="landscape"),
-                             key="landscape")
+            self._send_album(manifest, self._previews(date_dir, manifest, key="file"),
+                             key="file")
         except Exception as e:
             self._safe_send(f"❌ Re-send failed: {e}")
             log(f"resend failed: {e}", "ERROR")
